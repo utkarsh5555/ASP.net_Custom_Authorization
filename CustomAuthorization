@@ -1,38 +1,52 @@
-public class CustomAuthorization : AuthorizeAttribute, IAuthorizationFilter
+ public class CustomAuthorization : AuthorizeAttribute
     {
-        public string LoginPage { get; set; }
-
+        public AppSession CurrentSession
+        {
+            get { return (HttpContext.Current.Session["CurrentSession"] as AppSession); }
+            set { HttpContext.Current.Session["CurrentSession"] = value; }
+        }
         public override void OnAuthorization(AuthorizationContext filterContext)
         {
-            LoginPage = "~/Users/Index?ReturnUrl=" + filterContext.HttpContext.Request.RawUrl;
-            if (!filterContext.HttpContext.User.Identity.IsAuthenticated)
+            var loginPage = "~/Account/Login?ReturnUrl=" + filterContext.HttpContext.Request.RawUrl;
+            var ctx = HttpContext.Current;
+            var httpContext = filterContext.HttpContext;
+            var request = httpContext.Request;
+            var response = httpContext.Response;
+            var user = httpContext.User;
+            var sessionCookie = request.Headers["Cookie"];
+            if ((CurrentSession?.CurrentUser == null) &&
+                HttpContext.Current.User.Identity.IsAuthenticated)
             {
-                filterContext.HttpContext.Response.Redirect(LoginPage);
-            }
-            HttpContext ctx = HttpContext.Current;
-            if (ctx.Session != null && ctx.Session["CurrentSession"] != null)
-            {
-                if (ctx.Session.IsNewSession)
+                using (var service = new SupaSystemService())
                 {
-                    string sessionCookie = ctx.Request.Headers["Cookie"];
-                    if ((null != sessionCookie) && (sessionCookie.IndexOf("ASP.NET_SessionId") >= 0))
+                    Exception ex;
+                    CurrentSession = new AppSession
                     {
-                        string redirectOnSuccess = filterContext.HttpContext.Request.Url.PathAndQuery;
-                        string redirectUrl = string.Format("?ReturnUrl={0}", redirectOnSuccess);
-                        string loginUrl = "~/Users/Index/" + redirectUrl;
-                        if (ctx.Request.IsAuthenticated)
-                        {
-                            FormsAuthentication.SignOut();
-                        }
-                        RedirectResult rr = new RedirectResult(loginUrl);
-                        filterContext.Result = rr;
-                    }
+                        CurrentUser = service
+                            .FindOneUser(new User() {Email = HttpContext.Current.User.Identity.GetUserName()}, out ex)
+                            .ToModel()
+                    };
                 }
             }
-            else
+            if (CurrentSession == null &&
+                ctx.Session.IsNewSession && sessionCookie != null &&
+                (sessionCookie.IndexOf("ASP.NET_SessionId", StringComparison.Ordinal) >= 0))
             {
-                RedirectResult rr = new RedirectResult(LoginPage);
-                filterContext.Result = rr;
+                if (request.IsAjaxRequest())
+                {
+                    if (user.Identity.IsAuthenticated == false)
+                        response.StatusCode = (int)HttpStatusCode.Unauthorized;
+                    else
+                        response.StatusCode = (int)HttpStatusCode.Forbidden;
+
+                    response.SuppressFormsAuthenticationRedirect = true;
+                    response.End();
+                }
+                else
+                {
+                    filterContext.Result = new RedirectResult(loginPage);
+                    return;
+                }
             }
             base.OnAuthorization(filterContext);
         }
